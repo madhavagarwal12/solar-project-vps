@@ -1,0 +1,28 @@
+# Local development database only. The app itself still runs on the host via
+# `npm run dev` (not containerized) — this just replaces the old SQLite dev.db
+# now that prisma/schema.prisma targets postgresql. Point DATABASE_URL at it:
+#   DATABASE_URL="postgresql://helios:helios_dev@localhost:5432/helios"
+#
+# For the VPS staging/production deploy topology (app containers + Caddy),
+# see deploy/docker-compose.yml and DEPLOYMENT.md.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: helios
+      POSTGRES_PASSWORD: helios_dev
+      POSTGRES_DB: helios
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helios"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_dev_data:

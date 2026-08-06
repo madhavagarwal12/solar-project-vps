@@ -1,0 +1,7 @@
+{$STAGING_DOMAIN} {
+	reverse_proxy app-staging:3000
+}
+
+{$PROD_DOMAIN} {
+	reverse_proxy app-production:3000
+}

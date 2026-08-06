@@ -1,0 +1,205 @@
+name: Deploy
+
+# Runs only on merge to main, and only after ci.yml's checks would pass (this
+# workflow re-runs the same gate itself via the `gate` job, since a separate
+# workflow can't `needs:` a job in another workflow file).
+#
+# Stage order mirrors ci-cd-pipeline.md:
+#   gate -> build-and-push -> migrate-staging -> deploy-staging -> smoke-staging
+#        -> [manual approval] -> deploy-production (migrate + deploy + smoke + notify)
+#
+# IMPORTANT — current status: the VPS this deploys to does not exist yet.
+# `deploy-staging` and the deploy step inside `deploy-production` detect a
+# missing VPS_HOST secret and skip themselves with a warning instead of
+# failing, so this workflow stays green. Once the VPS is provisioned, add the
+# secrets listed in DEPLOYMENT.md and these steps activate with no workflow
+# changes needed. Until then, this pipeline still proves lint/typecheck/build
+# pass and that migrations apply cleanly to real staging/production databases.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Lint, typecheck, migration check, build
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  build-and-push:
+    name: Build & push Docker image
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: meta
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          TAG="${{ github.sha }}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:staging
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  migrate-staging:
+    name: Migrate staging database
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm, cache-dependency-path: package-lock.json }
+      - run: npm ci
+      # Additive-only migrations per ci-cd-pipeline.md: nothing here should
+      # combine "add column" with "make required" in one migration — split
+      # across releases so old and new app code both keep working mid-deploy.
+      - name: Run prisma migrate deploy against staging
+        run: npm run migrate:deploy
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+
+  deploy-staging:
+    name: Deploy staging container
+    needs: migrate-staging
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: SSH deploy to VPS (staging container)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          if [ -z "$VPS_HOST" ]; then
+            echo "::warning::VPS_HOST secret is not set — no VPS provisioned yet. Skipping staging deploy. See DEPLOYMENT.md."
+            exit 0
+          fi
+          echo "Deploying ${{ needs.build-and-push.outputs.image }}:${{ needs.build-and-push.outputs.tag }} to staging — see appleboy/ssh-action step below once VPS_HOST is set."
+      - name: Deploy via SSH
+        if: ${{ vars.VPS_PROVISIONED == 'true' }}
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_SSH_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /opt/helios/deploy
+            export IMAGE_REPO=${{ needs.build-and-push.outputs.image }}
+            export STAGING_IMAGE_TAG=${{ needs.build-and-push.outputs.tag }}
+            docker compose pull app-staging
+            docker compose up -d app-staging
+
+  smoke-staging:
+    name: Smoke check staging
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Health check staging URL
+        env:
+          STAGING_URL: ${{ vars.STAGING_URL }}
+        run: |
+          if [ -z "$STAGING_URL" ]; then
+            echo "::warning::STAGING_URL repo variable not set — no staging environment to smoke-check yet. Skipping."
+            exit 0
+          fi
+          curl --fail --silent --show-error --max-time 10 "$STAGING_URL/login" > /dev/null
+          echo "Staging responded 200 on /login"
+      # No E2E test suite exists yet (see testing-strategy.md). Once one does,
+      # run its smoke subset here instead of the bare health check above.
+
+  deploy-production:
+    name: Migrate + deploy + smoke-check production
+    needs: smoke-staging
+    runs-on: ubuntu-latest
+    # Referencing the `production` GitHub Environment is the manual approval
+    # gate: configure required reviewers under Settings > Environments >
+    # production in the repo (cannot be set from workflow YAML). This job
+    # will not start running until someone approves it there.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm, cache-dependency-path: package-lock.json }
+      - run: npm ci
+
+      - name: Run prisma migrate deploy against production
+        run: npm run migrate:deploy
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+
+      - name: Retag image as production
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          if [ -z "$VPS_HOST" ]; then
+            echo "::warning::VPS_HOST secret is not set — no VPS provisioned yet. Skipping production deploy. See DEPLOYMENT.md."
+            exit 0
+          fi
+          echo "Would deploy ${{ needs.build-and-push.outputs.image }}:${{ needs.build-and-push.outputs.tag }} to production."
+
+      - name: Deploy via SSH
+        if: ${{ vars.VPS_PROVISIONED == 'true' }}
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_SSH_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /opt/helios/deploy
+            export IMAGE_REPO=${{ needs.build-and-push.outputs.image }}
+            export PROD_IMAGE_TAG=${{ needs.build-and-push.outputs.tag }}
+            docker tag $IMAGE_REPO:${{ needs.build-and-push.outputs.tag }} $IMAGE_REPO:latest || true
+            docker compose pull app-production
+            docker compose up -d app-production
+
+      - name: Post-deploy smoke check
+        if: ${{ vars.VPS_PROVISIONED == 'true' }}
+        env:
+          PROD_URL: ${{ vars.PROD_URL }}
+        run: |
+          curl --fail --silent --show-error --max-time 10 "$PROD_URL/login" > /dev/null
+          echo "Production responded 200 on /login"
+
+      - name: Notify team channel
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.DEPLOY_NOTIFY_WEBHOOK_URL }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "::notice::DEPLOY_NOTIFY_WEBHOOK_URL not set — skipping notification. See DEPLOYMENT.md."
+            exit 0
+          fi
+          curl -s -X POST -H 'Content-Type: application/json' \
+            -d "{\"text\":\"Helios deploy ${{ job.status }} — ${{ github.sha }} by ${{ github.actor }}\"}" \
+            "$WEBHOOK_URL"

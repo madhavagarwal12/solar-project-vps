@@ -1,36 +1,74 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Helios Engineering System
+
+Solar field executive site-assessment platform: lead pipeline, site visit wizard,
+roof planner, generation calculator, proposal preview, document center, Supabase Auth,
+and Resend email plumbing.
+
+## Stack
+
+| Layer | Choice |
+|---|---|
+| Framework | Next.js 16 App Router + TypeScript |
+| Styling | Tailwind CSS v4 with tokens in `app/globals.css` |
+| Database | Postgres via Prisma 5 (local dev uses `docker-compose.yml`, see below) |
+| Production Database | Supabase Postgres through Prisma via a pooled `DATABASE_URL` |
+| Auth | Supabase Auth sessions mapped to Prisma `User` rows by email for roles |
+| Email | Resend transactional email through `lib/email.ts` and `app/api/email/proposal` |
+| Maps | Google Places API server-side proxy in `app/api/places/*` |
+
+## Scope
+
+Implemented: Supabase login/logout, local role lookup, lead dashboard, lead detail,
+visit forms, roof planner, generation and financial calculator, proposal preview,
+documents page, and proposal email API route.
+
+Not yet implemented: stored PDF proposal generation, photo upload storage, manager
+approval workflow, price-list/subsidy admin config, and Supabase Postgres migration.
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+docker compose up -d postgres   # local Postgres, see docker-compose.yml
+npm install
+npm run migrate:dev
+npm run db:seed
+npm run auth:seed
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). The app redirects to `/login`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Demo accounts:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Email | Password | Role |
+|---|---|---|
+| field@helios.dev | field1234 | Field Executive |
+| manager@helios.dev | manager1234 | Manager |
+| admin@helios.dev | admin1234 | Admin |
 
-## Learn More
+## Environment
 
-To learn more about Next.js, take a look at the following resources:
+Copy `.env.example` into local or Vercel environment variables and fill in real values.
+For Vercel production data, set `DATABASE_URL` to the Supabase Supavisor session-pooler
+connection string from Supabase Dashboard > Connect. The anon key and service role key
+are not database passwords.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## CI/CD and Deployment
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+GitHub Actions runs lint, typecheck, a Prisma migration-safety check, and a build on
+every PR (`.github/workflows/ci.yml`). Merges to `main` additionally build a Docker
+image, migrate the staging and production databases, and deploy to a VPS behind a
+manual approval gate (`.github/workflows/deploy.yml`). See [DEPLOYMENT.md](DEPLOYMENT.md)
+for the required secrets, GitHub Environments, and one-time VPS setup — the deploy
+steps stay disabled (skip with a warning) until that setup is done.
 
-## Deploy on Vercel
+## Data Model
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+See `prisma/schema.prisma`. SQLite has no enum type, so fields that map to spec enums
+are stored as `String` and constrained at the application layer in `lib/types.ts`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Calculation Engine
+
+`lib/calculations.ts` implements roof area, row spacing, shading loss, generation, and
+financial formulas. Peak Sun Hours come from `lib/pvgis.ts`, which calls PVGIS when
+coordinates exist and falls back to `lib/psh-data.ts`.

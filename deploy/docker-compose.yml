@@ -1,0 +1,46 @@
+# Runs on the VPS. One host, two app containers (staging + production) behind
+# a single Caddy reverse proxy that terminates TLS for both domains.
+#
+# Not wired into CI yet — the VPS this targets doesn't exist yet. See the
+# "Provisioning the VPS" section of ../DEPLOYMENT.md for the one-time setup
+# steps (installing Docker, copying this directory, creating the .env files
+# referenced below, and pointing DNS at the host) before the deploy job in
+# .github/workflows/deploy.yml can be un-stubbed.
+#
+# Images are built and pushed to GHCR by CI; this file only pulls and runs them.
+
+services:
+  app-staging:
+    image: ${IMAGE_REPO}:${STAGING_IMAGE_TAG:-staging}
+    restart: unless-stopped
+    env_file: .env.staging
+    expose:
+      - "3000"
+
+  app-production:
+    image: ${IMAGE_REPO}:${PROD_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env.production
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      STAGING_DOMAIN: ${STAGING_DOMAIN}
+      PROD_DOMAIN: ${PROD_DOMAIN}
+    depends_on:
+      - app-staging
+      - app-production
+
+volumes:
+  caddy_data:
+  caddy_config:

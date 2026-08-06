@@ -1,0 +1,170 @@
+// Helios Engineering System — data model
+// Scope: lead pipeline + single-visit site assessment + solar calculation + auth/RBAC.
+// Deliberately excludes proposals/price-configs — see solar_field_software_spec.md
+// Phase 1-3 for what this MVP covers vs. later phases.
+//
+// Fields that map to spec enums are kept as String and constrained to a TS union
+// at the application layer — see lib/types.ts. (Carried over from the original
+// SQLite schema, which had no enum type; not revisited as part of the Postgres move.)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Roles: FIELD_EXECUTIVE (default) | MANAGER | ADMIN — see lib/auth-helpers.ts for RBAC checks.
+model User {
+  id           String     @id @default(cuid())
+  name         String
+  email        String     @unique
+  passwordHash String
+  role         String     @default("FIELD_EXECUTIVE")
+  active       Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  auditLogs    AuditLog[]
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorId   String?
+  action    String   // LOGIN_SUCCESS | LOGIN_FAILURE | LOGOUT
+  detail    String?
+  createdAt DateTime @default(now())
+}
+
+model Lead {
+  id               String         @id @default(cuid())
+  leadCode         String         @unique
+  customerName     String
+  phone            String
+  altPhone         String?
+  email            String?
+  address          String
+  city             String
+  state            String
+  pinCode          String?
+  lat              Float?
+  lng              Float?
+  propertyType     String         @default("RESIDENTIAL")
+  connectionType   String         @default("SINGLE_PHASE")
+  sanctionedLoadKw Float?
+  avgMonthlyBill   Float?
+  avgMonthlyUnits  Float?
+  leadSource       String?
+  fieldExecutive   String?
+  preferredVisitAt DateTime?
+  notes            String?
+  status           String         @default("NEW")
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  assessment       SiteAssessment?
+}
+
+model SiteAssessment {
+  id                    String    @id @default(cuid())
+  lead                  Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  leadId                String    @unique
+
+  visitStartedAt        DateTime?
+  visitCompletedAt      DateTime?
+
+  // Property & roof
+  roofType              String?
+  roofCondition         String?
+  totalRoofAreaSqft     Float?
+  usableAreaSqft        Float?
+  floors                Int?
+  buildingAgeYears      Int?
+  roofAccess            String?
+  structurallySound     Boolean?
+  hasLeakageOrCracks    Boolean?
+
+  // Orientation & tilt
+  roofOrientation       String?
+  roofTiltDegrees       Float?
+  usesMountingStructure Boolean?
+  proposedPanelTilt     Float?
+
+  // Shading time assessment
+  shadingMorning        String   @default("NONE")
+  shadingPeak           String   @default("NONE")
+  shadingEvening        String   @default("NONE")
+
+  // Electrical
+  meterNumber           String?
+  discomName            String?
+  meterLocation         String?
+  distanceRoofToMeterM  Float?
+  netMeteringAvailable  Boolean?
+  hasExistingInverter   Boolean?
+  hasExistingSolar      Boolean?
+  spaceNearMeter        Boolean?
+
+  notes                 String?
+  status                String   @default("VISIT_SCHEDULED")
+
+  obstructions          SiteObstruction[]
+  calculations          SolarCalculation[]
+
+  updatedAt             DateTime @updatedAt
+}
+
+model SiteObstruction {
+  id           String         @id @default(cuid())
+  assessment   SiteAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  assessmentId String
+
+  type         String  // water_tank | parapet | overhead_cable | neighboring_building | trees | mobile_tower | other
+  present      Boolean @default(true)
+  heightFt     Float?
+  distanceFt   Float?
+  direction    String?
+  isDeciduous  Boolean?
+  notes        String?
+}
+
+model SolarCalculation {
+  id                   String         @id @default(cuid())
+  assessment           SiteAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  assessmentId         String
+
+  systemSizeKw         Float
+  panelCount           Int
+  panelWattage         Int
+  inverterType         String?
+
+  pshHours             Float
+  pshSource            String         @default("STATE_AVERAGE") // PVGIS | STATE_AVERAGE — see lib/pvgis.ts
+  performanceRatio     Float
+  orientationFactor    Float
+  shadingLossPct       Float
+  dustLossPct          Float
+  temperatureLossPct   Float
+  cableInverterLossPct Float
+
+  dailyGenKwh          Float
+  monthlyGenKwh        Float
+  annualGenKwh         Float
+
+  tariffPerUnit        Float
+  costPerKw            Float
+  grossCost            Float
+  subsidyAmount        Float
+  netCost              Float
+  monthlySavings       Float
+  annualSavings        Float
+  paybackYears         Float
+  lifetimeSavings25yr  Float
+  roiPct               Float
+  co2OffsetAnnualTons  Float
+
+  createdAt            DateTime @default(now())
+}
