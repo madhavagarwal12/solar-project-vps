@@ -15,6 +15,17 @@
 # Requires a `.env` file in this directory (compose variables: POSTGRES_PASSWORD,
 # NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, APP_PORT) and a
 # `.env.production` file (app runtime secrets) — see DEPLOYMENT.md.
+#
+# Full teardown (containers + network + volume, nothing left behind):
+#   docker compose -f docker-compose.vps.yml down -v
+#
+# Later, once a domain exists and this should sit behind the VPS's existing
+# Traefik instead of a raw port: join the `app` service to Traefik's docker
+# network and add its routing labels (same pattern as this box's other
+# services) instead of standing up a second reverse proxy — do not add Caddy
+# on top of an existing Traefik on the same host.
+
+name: helios
 
 services:
   postgres:
