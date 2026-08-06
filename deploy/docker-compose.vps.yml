@@ -16,6 +16,11 @@
 # NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, APP_PORT) and a
 # `.env.production` file (app runtime secrets) — see DEPLOYMENT.md.
 #
+# Generate POSTGRES_PASSWORD with `openssl rand -hex 24`, not `-base64` —
+# base64 output can contain `+ / =`, which breaks unescaped inside the
+# DATABASE_URL connection string built below (Prisma fails with a confusing
+# "invalid port number" error that's actually a mis-parsed password).
+#
 # Full teardown (containers + network + volume, nothing left behind):
 #   docker compose -f docker-compose.vps.yml down -v
 #
