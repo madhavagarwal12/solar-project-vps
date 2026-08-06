@@ -2,6 +2,11 @@
 
 FROM node:20-alpine AS base
 WORKDIR /app
+# Prisma's query engine binary needs OpenSSL; Alpine doesn't ship it by
+# default. Installed once here so deps (postinstall -> prisma generate),
+# builder, and runner all inherit it — see the matching binaryTargets in
+# prisma/schema.prisma.
+RUN apk add --no-cache openssl
 
 # ---- deps: install dependencies only (cached across builds) ----
 FROM base AS deps
