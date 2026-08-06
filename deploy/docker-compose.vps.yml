@@ -13,8 +13,8 @@
 #   docker compose -f docker-compose.vps.yml up -d
 #
 # Requires a `.env` file in this directory (compose variables: POSTGRES_PASSWORD,
-# NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, APP_PORT) and a
-# `.env.production` file (app runtime secrets) — see DEPLOYMENT.md.
+# NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, APP_PORT, APP_DOMAIN)
+# and a `.env.production` file (app runtime secrets) — see DEPLOYMENT.md.
 #
 # Generate POSTGRES_PASSWORD with `openssl rand -hex 24`, not `-base64` —
 # base64 output can contain `+ / =`, which breaks unescaped inside the
@@ -24,11 +24,14 @@
 # Full teardown (containers + network + volume, nothing left behind):
 #   docker compose -f docker-compose.vps.yml down -v
 #
-# Later, once a domain exists and this should sit behind the VPS's existing
-# Traefik instead of a raw port: join the `app` service to Traefik's docker
-# network and add its routing labels (same pattern as this box's other
-# services) instead of standing up a second reverse proxy — do not add Caddy
-# on top of an existing Traefik on the same host.
+# Traefik routing: the `app` service carries Traefik labels and joins the
+# box's existing `app-network` (external, created by the other stack — same
+# pattern as this host's other services, e.g. n8n). This is inert until
+# APP_DOMAIN resolves to this VPS: Traefik's ACME TLS-ALPN-01 challenge
+# (resolver `mytlschallenge`, see its container's --certificatesresolvers.*
+# flags) needs the domain to actually point here before it can issue a cert.
+# The direct `${APP_PORT}` publish stays alongside it for now — safe to drop
+# once the domain is confirmed working, if you'd rather not expose both.
 
 name: helios
 
@@ -63,6 +66,16 @@ services:
       DATABASE_URL: postgresql://helios:${POSTGRES_PASSWORD}@postgres:5432/helios
     ports:
       - "${APP_PORT:-3000}:3000"
+    networks:
+      - default
+      - app-network
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.helios.rule: "Host(`${APP_DOMAIN}`)"
+      traefik.http.routers.helios.entrypoints: "web,websecure"
+      traefik.http.routers.helios.tls: "true"
+      traefik.http.routers.helios.tls.certresolver: "mytlschallenge"
+      traefik.http.services.helios.loadbalancer.server.port: "3000"
 
   # One-off tooling containers, built from the `builder` stage (which has the
   # full node_modules including the prisma/tsx CLIs — the runner stage's
@@ -99,3 +112,8 @@ services:
 
 volumes:
   postgres_data:
+
+networks:
+  default: {}
+  app-network:
+    external: true
