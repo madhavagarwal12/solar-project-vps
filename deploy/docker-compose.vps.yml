@@ -71,6 +71,13 @@ services:
       - app-network
     labels:
       traefik.enable: "true"
+      # The app container sits on two networks (default, for postgres; and
+      # app-network, for Traefik). Without this label Traefik's docker
+      # provider picks an ambiguous IP when building its backend pool — it
+      # silently chose the `default` network's IP, which Traefik itself has
+      # no route to, so TLS handshakes succeeded but every request hung
+      # forever with no response and no error logged anywhere.
+      traefik.docker.network: "app-network"
       traefik.http.routers.helios.rule: "Host(`${APP_DOMAIN}`)"
       traefik.http.routers.helios.entrypoints: "web,websecure"
       traefik.http.routers.helios.tls: "true"
