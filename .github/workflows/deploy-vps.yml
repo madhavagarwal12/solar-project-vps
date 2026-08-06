@@ -1,0 +1,70 @@
+name: Deploy to VPS
+
+# Deploys to the Hostinger VPS at /opt/helios/app, which builds its own
+# Docker image locally via docker-compose.vps.yml (Postgres runs on the same
+# box, not Supabase) — a different mechanism than deploy.yml, which assumes
+# a pre-built GHCR image and a remote Supabase Postgres. Keep both workflows:
+# this one matches how the app is actually deployed today; deploy.yml stays
+# for that other topology if it's ever adopted instead.
+#
+# Requires repo secrets VPS_HOST, VPS_SSH_USER, VPS_SSH_KEY (see
+# DEPLOYMENT.md). References the `production` GitHub Environment so a
+# required-reviewers rule can be added later (Settings > Environments >
+# production) without touching this file — unconfigured, it's a no-op and
+# the job runs immediately.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Lint, typecheck, migration check, build
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  deploy:
+    name: Pull, migrate, rebuild on the VPS
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_SSH_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/helios/app
+            git fetch origin main
+            git reset --hard origin/main
+            cd deploy
+            docker compose -f docker-compose.vps.yml --profile tools run --rm migrate
+            docker compose -f docker-compose.vps.yml up -d --build
+
+      - name: Smoke check
+        env:
+          PROD_URL: ${{ vars.PROD_URL }}
+        run: |
+          if [ -z "$PROD_URL" ]; then
+            echo "::warning::PROD_URL repo variable not set — skipping smoke check. Set it to https://test.autopilot-studio.com in Settings > Variables."
+            exit 0
+          fi
+          for i in 1 2 3 4 5; do
+            status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PROD_URL/login" || echo "000")
+            if [ "$status" = "200" ]; then
+              echo "Smoke check passed: $PROD_URL/login returned 200"
+              exit 0
+            fi
+            echo "Attempt $i: got $status, retrying in 5s..."
+            sleep 5
+          done
+          echo "::error::Smoke check failed — $PROD_URL/login did not return 200 after retries"
+          exit 1
