@@ -1,0 +1,85 @@
+# For a VPS that already runs its own reverse proxy (e.g. Traefik) for other
+# apps, and has no domain pointed at Helios yet. Self-contained: Postgres +
+# the app only, published directly on a host port, no reverse proxy of its
+# own — nothing here touches ports 80/443 or any other stack on the box.
+#
+# Once a domain exists and this should sit behind Traefik/Caddy instead of a
+# raw port, see docker-compose.yml (root, local dev) and docker-compose.yml
+# in this directory (VPS + Caddy, staging+prod topology) for that shape.
+#
+# Usage (from the deploy/ directory):
+#   docker compose -f docker-compose.vps.yml --profile tools run --rm migrate
+#   docker compose -f docker-compose.vps.yml --profile tools run --rm seed   # optional, demo data only
+#   docker compose -f docker-compose.vps.yml up -d
+#
+# Requires a `.env` file in this directory (compose variables: POSTGRES_PASSWORD,
+# NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, APP_PORT) and a
+# `.env.production` file (app runtime secrets) — see DEPLOYMENT.md.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: helios
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: helios
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helios"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: ..
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env.production
+    environment:
+      DATABASE_URL: postgresql://helios:${POSTGRES_PASSWORD}@postgres:5432/helios
+    ports:
+      - "${APP_PORT:-3000}:3000"
+
+  # One-off tooling containers, built from the `builder` stage (which has the
+  # full node_modules including the prisma/tsx CLIs — the runner stage's
+  # standalone output deliberately doesn't). Not started by `up`.
+  migrate:
+    build:
+      context: ..
+      target: builder
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+    environment:
+      DATABASE_URL: postgresql://helios:${POSTGRES_PASSWORD}@postgres:5432/helios
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["npx", "prisma", "migrate", "deploy"]
+    profiles: ["tools"]
+
+  seed:
+    build:
+      context: ..
+      target: builder
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+    environment:
+      DATABASE_URL: postgresql://helios:${POSTGRES_PASSWORD}@postgres:5432/helios
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["npx", "tsx", "prisma/seed.ts"]
+    profiles: ["tools"]
+
+volumes:
+  postgres_data:
