@@ -34,13 +34,25 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - name: Set up SSH key
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          # Fails fast with a clear parser error if the secret's content is
+          # malformed, instead of a generic "handshake failed" from ssh itself.
+          ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null
+
       - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_SSH_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_USER: ${{ secrets.VPS_SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key "$VPS_SSH_USER@$VPS_HOST" '
             set -e
             cd /opt/helios/app
             git fetch origin main
@@ -48,6 +60,7 @@ jobs:
             cd deploy
             docker compose -f docker-compose.vps.yml --profile tools run --rm migrate
             docker compose -f docker-compose.vps.yml up -d --build
+          '
 
       - name: Smoke check
         env:
