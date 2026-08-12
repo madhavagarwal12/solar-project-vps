@@ -12,6 +12,12 @@ name: Deploy to VPS
 # required-reviewers rule can be added later (Settings > Environments >
 # production) without touching this file — unconfigured, it's a no-op and
 # the job runs immediately.
+#
+# VPS_SSH_KEY must be base64-encoded (`base64 -w0 path/to/key`), not the raw
+# multi-line PEM block — pasting a raw private key into GitHub's secret
+# textbox repeatedly got corrupted (BEGIN/END markers or line breaks
+# mangled), causing "ssh: no key found" / "error in libcrypto". A single
+# base64 line has no special characters or newlines to lose in transit.
 
 on:
   push:
@@ -36,14 +42,14 @@ jobs:
     steps:
       - name: Set up SSH key
         env:
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_KEY_B64: ${{ secrets.VPS_SSH_KEY }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          echo "$VPS_SSH_KEY_B64" | base64 -d > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          # Fails fast with a clear parser error if the secret's content is
+          # Fails fast with a clear parser error if the decoded key is still
           # malformed, instead of a generic "handshake failed" from ssh itself.
           ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null
 
